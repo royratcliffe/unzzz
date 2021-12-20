@@ -1,0 +1,99 @@
+---
+title: "Technical Note 01"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Technical Note 01}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(unzzz)
+```
+
+In R, you cannot easily or conveniently unzip a zipped file from a raw object and access their raw zipped members. Yet this is a useful requirement. Zip files comprise member pairs where each member has a name and a sequence of bytes. The name itself is just a string defining the file name and any subdirectory paths using forward-slash delimiters. Note, the zip files does *not* directly model a sub-directory tree.
+
+## Problem statement
+
+Take any zip file, `a.zip` for example. It has one text file called `a.txt`. The following statement creates the zip file.
+```{r eval=FALSE}
+zip("a.zip", "a.txt")
+```
+
+You can read it entirely using `xfun::read_bin`, short for:
+```{r eval=FALSE, include=TRUE}
+readBin(x, what = "raw", n = file.info(x)$size)
+```
+where `x` is the name of the file. The result is an object of raw bytes. We want to transform this single raw sequence of bytes to a list of raw bytes with one list item for each member.
+
+Unzipping disregards the member modification times.
+
+## Connections
+
+You can derive a _connection_ from raw bytes using `base::rawConnection` then you can access a zipped member connection using `base:unz`. This only works if you can access the member file names. The excerpt below requires that we know that the zip file has a member called `a.txt`.
+```{r eval=FALSE, include=TRUE}
+xfun::read_bin("a.zip") |> rawConnection() |> unz(filename = "a.txt")
+```
+
+Trouble is, there is no obvious way to determine the members, except from the original file. The following lists the zip file contents by name, length and date.
+```{r eval=FALSE}
+unzip("a.zip", list = TRUE)
+```
+Naturally, this implies that you have to save raw bytes before you can list the zip.
+
+## Temporary write for listing of members
+
+If we accept the unzip from file limitation, then we only need to first write the raw bytes to a temporary file then apply the unzip-list to read back the resulting file information. This is not ideal but beats unzipping all the members from raw to disk. An actual unzip maps the member names to read file names which might not always prove reliable. File systems treat names case-sensitively or not, for example, typically for macOS and Windows. This would create a problem if two members share the same case-insensitive path name.
+
+Hence we define a simple function that lists members from a raw zip. It creates a temporary file, unlinking it before exit. At some future point, our implementation will replace the temporary file with some other, more in-memory clean, method of listing zipper file information.
+```{r}
+unzip_list <- function(object) {
+  zipfile <- tempfile()
+  writeBin(object, zipfile, useBytes = TRUE)
+  list <- unzip(zipfile, list = TRUE)
+  unlink(zipfile)
+  list
+}
+```
+
+Should the `unzip_list` implementation apply `useBytes = TRUE`? The documentation explains that this option avoids re-coding.
+
+This only leaves us with another problem. The `base:unz` function creates a text connection from which you cannot read binary. The following fails.
+```{r eval=FALSE}
+readBin(unz("a.zip", "a.txt"), what = "raw")
+```
+Not only that, neither can you size the connection in order to determine how many raw bytes to read. This approach leads the research at present to a dead end.
+
+## The compromise solution
+
+Since we have to unzip to disk, why not write the raw bytes then unzip and read members one by one?
+```{r}
+unzip_raw <- function(object) {
+  zipfile <- tempfile()
+  writeBin(object, zipfile, useBytes = TRUE)
+  list <- unzip(zipfile, list = TRUE)
+  bins <- lapply(list$Name, function(name) {
+    junk <- unzip(zipfile, name, junkpaths = TRUE, exdir = tempdir())
+    bin <- xfun::read_bin(junk)
+    unlink(junk)
+    bin
+  })
+  unlink(zipfile)
+  names(bins) <- list$Name
+  bins
+}
+```
+
+## Conclusions
+
+Successful. It throws away the date. Our implementation makes some simplifying assumptions:
+
+1. The date does not matter.
+2. The member information does not require verification.
