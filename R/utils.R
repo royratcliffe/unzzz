@@ -7,7 +7,7 @@ unzip_bin.character <- function(x, ...) {
   dir <- tempdir()
   bins <- lapply(ziplist$filename, function(filename) {
     zip::unzip(x, filename, junkpaths = TRUE, exdir = dir)
-    junk <- file.path(dir, filename)
+    junk <- file.path(dir, basename(filename))
     on.exit(unlink(junk))
     xfun::read_bin(junk)
   })
